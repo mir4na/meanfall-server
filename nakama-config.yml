@@ -1,0 +1,38 @@
+name: meanfall
+
+logger:
+  level: info
+  stdout: true
+
+
+
+session:
+  token_expiry_sec: 604800
+  refresh_token_expiry_sec: 2592000
+
+socket:
+  port: 7350
+  protocol: tcp
+  max_message_size_bytes: 131072
+  read_timeout_ms: 30000
+  write_timeout_ms: 30000
+  idle_timeout_ms: 60000
+  ping_period_ms: 25000
+  pong_wait_ms: 30000
+
+console:
+  port: 7351
+  username: admin
+  password: meanfall_admin_secret
+
+runtime:
+  js_entrypoint: index.js
+  http_key: meanfall_runtime_key
+
+match:
+  join_marker_deadline_ms: 10000
+
+social:
+  steam:
+    publisher_key: ""
+    prefix: ""

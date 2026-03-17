@@ -1,0 +1,2 @@
+function InitModule() {}
+export { InitModule };
