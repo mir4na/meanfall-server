@@ -8,7 +8,8 @@ import {
     matchSignal,
 } from "./match_handler";
 import {
-    rpcGetPlayerRank,
+    rpcGetPlayerStats,
+    rpcGetMatchHistory,
     rpcGetLeaderboard,
     initLeaderboard,
 } from "./rank_handler";
@@ -42,7 +43,8 @@ function InitModule(
         matchSignal: matchSignal,
     });
 
-    initializer.registerRpc("get_player_rank", rpcGetPlayerRank);
+    initializer.registerRpc("get_player_stats", rpcGetPlayerStats);
+    initializer.registerRpc("get_match_history", rpcGetMatchHistory);
     initializer.registerRpc("get_leaderboard", rpcGetLeaderboard);
     initializer.registerRpc("create_custom_room", rpcCreateCustomRoom);
     initializer.registerRpc("join_custom_room", rpcJoinCustomRoom);

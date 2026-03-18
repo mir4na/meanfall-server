@@ -40,6 +40,7 @@ export interface PlayerState {
     isAfk: boolean;
     activePowerUp: PowerUpTypeValue;
     isAlive: boolean;
+    rank?: number;
 }
 
 export interface MatchState {
@@ -49,6 +50,8 @@ export interface MatchState {
     roundTick: number;
     maxLives: number;
     maxPlayers: number;
+    playersRemaining: number;
+    matchStartTime: number;
     isRanked: boolean;
     roomCode: string;
     tickRate: number;

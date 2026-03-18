@@ -13,6 +13,9 @@ import {
     resetRoundPowerUps,
     assignRandomPowerUp,
 } from "./powerup_handler";
+import {
+    updateMatchResults,
+} from "./rank_handler";
 
 const TICK_RATE = 5;
 const GUESS_TICKS = 30 * TICK_RATE;
@@ -112,6 +115,8 @@ function processRoundResult(
             player.lives = Math.max(0, player.lives - livesLost);
             if (player.lives <= 0) {
                 player.isAlive = false;
+                player.rank = state.playersRemaining;
+                state.playersRemaining--;
             }
         }
 
@@ -141,11 +146,27 @@ function processRoundResult(
 
 function checkGameOver(
     state: MatchState,
-    dispatcher: nkruntime.MatchDispatcher
+    dispatcher: nkruntime.MatchDispatcher,
+    nk: nkruntime.Nakama,
+    logger: nkruntime.Logger
 ): boolean {
     const alive = Object.values(state.players).filter((p) => p.isAlive);
     if (alive.length <= 1) {
         const winner = alive.length === 1 ? alive[0] : null;
+        if (winner) {
+            winner.rank = 1;
+        }
+
+        if (state.isRanked) {
+            const durationSeconds = Math.floor((Date.now() - state.matchStartTime) / 1000);
+            const rankedResults = Object.values(state.players).map((p) => ({
+                userId: p.userId,
+                username: p.username,
+                rank: p.rank || 1,
+            }));
+            updateMatchResults(nk, logger, rankedResults, durationSeconds);
+        }
+
         broadcastMessage(dispatcher, state.players, OpCode.GAME_OVER, {
             winnerId: winner?.userId ?? null,
             winnerUsername: winner?.username ?? null,
@@ -159,6 +180,10 @@ function startNewRound(
     state: MatchState,
     dispatcher: nkruntime.MatchDispatcher
 ): void {
+    if (state.roundNumber === 0) {
+        state.matchStartTime = Date.now();
+        state.playersRemaining = Object.values(state.players).filter((p) => p.isAlive).length;
+    }
     state.roundNumber += 1;
     state.roundTick = 0;
     state.phase = MatchPhase.COUNTDOWN;
@@ -202,6 +227,8 @@ export function matchInit(
         roundTick: 0,
         maxLives,
         maxPlayers,
+        playersRemaining: 0,
+        matchStartTime: 0,
         isRanked,
         roomCode,
         tickRate: TICK_RATE,
@@ -398,7 +425,7 @@ export function matchLoop(
 
     if (state.phase === MatchPhase.REVEALING) {
         if (state.roundTick >= REVEAL_TICKS) {
-            if (checkGameOver(state, dispatcher)) {
+            if (checkGameOver(state, dispatcher, nk, logger)) {
                 state.phase = MatchPhase.GAME_OVER;
                 return { state: state };
             }

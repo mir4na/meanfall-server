@@ -59,6 +59,10 @@ services:
       interval: 10s
       timeout: 5s
       retries: 5
+    ports:
+      - "7349:7349"
+      - "7350:7350"
+      - "7351:7351"
     networks:
       - meanfall_net
 
