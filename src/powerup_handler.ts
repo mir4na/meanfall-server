@@ -41,7 +41,7 @@ export function buildPowerUpActivateMessage(
     playerId: string,
     powerUpType: PowerUpTypeValue
 ): string {
-    return JSON.stringify({ playerId, powerUpType });
+    return JSON.stringify({ playerId: playerId, powerUpType: powerUpType });
 }
 
 export function assignRandomPowerUp(): PowerUpTypeValue {

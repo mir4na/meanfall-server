@@ -55,11 +55,11 @@ export function rpcCreateCustomRoom(
             key: roomCode,
             userId: "",
             value: {
-                matchId,
+                matchId: matchId,
                 creatorId: ctx.userId,
-                maxPlayers,
-                maxLives,
-                botCount,
+                maxPlayers: maxPlayers,
+                maxLives: maxLives,
+                botCount: botCount,
                 createdAt: Date.now(),
             },
             permissionRead: 2,
@@ -68,7 +68,7 @@ export function rpcCreateCustomRoom(
     ]);
 
     logger.info("Custom room created: code=%s matchId=%s", roomCode, matchId);
-    return JSON.stringify({ roomCode, matchId });
+    return JSON.stringify({ roomCode: roomCode, matchId: matchId });
 }
 
 export function rpcJoinCustomRoom(
@@ -95,7 +95,7 @@ export function rpcJoinCustomRoom(
     const room = records[0].value as any;
     logger.info("Player %s joining room %s (matchId=%s)", ctx.userId, roomCode, room.matchId);
 
-    return JSON.stringify({ matchId: room.matchId, roomCode });
+    return JSON.stringify({ matchId: room.matchId, roomCode: roomCode });
 }
 
 export function rpcFindOrCreateRankedMatch(
@@ -112,5 +112,5 @@ export function rpcFindOrCreateRankedMatch(
     });
 
     logger.info("Ranked match created: %s", matchId);
-    return JSON.stringify({ matchId });
+    return JSON.stringify({ matchId: matchId });
 }

@@ -46,7 +46,7 @@ function resetRoundPowerUps(state) {
     }
 }
 function buildPowerUpActivateMessage(playerId, powerUpType) {
-    return JSON.stringify({ playerId, powerUpType });
+    return JSON.stringify({ playerId: playerId, powerUpType: powerUpType });
 }
 function assignRandomPowerUp() {
     const types = Object.values(PowerUpType).filter((t) => t !== PowerUpType.NONE);
@@ -142,15 +142,15 @@ function processRoundResult(state, dispatcher, logger) {
             username: player.username,
             guessValue: player.guessValue,
             lives: player.lives,
-            livesLost,
+            livesLost: livesLost,
             isWinner: winnerIds.includes(playerId),
             isAlive: player.isAlive,
         };
     }
     const payload = {
-        target,
+        target: target,
         is2PlayerMode: alivePlayers.length === 2,
-        playerResults,
+        playerResults: playerResults,
         roundNumber: state.roundNumber,
     };
     broadcastMessage(dispatcher, state.players, OpCode.ROUND_RESULT, payload);
@@ -249,7 +249,7 @@ function matchJoin(ctx, logger, nk, dispatcher, tick, state, presences) {
         }
         logger.info("Player joined: %s (reconnect: %s)", presence.userId, isReconnect);
     }
-    return { state };
+    return { state: state };
 }
 function matchLeave(ctx, logger, nk, dispatcher, tick, state, presences) {
     for (const presence of presences) {
@@ -262,7 +262,7 @@ function matchLeave(ctx, logger, nk, dispatcher, tick, state, presences) {
             logger.info("Player disconnected: %s (kept in state for reconnect)", presence.userId);
         }
     }
-    return { state };
+    return { state: state };
 }
 function matchLoop(ctx, logger, nk, dispatcher, tick, state, messages) {
     for (const message of messages) {
@@ -307,14 +307,14 @@ function matchLoop(ctx, logger, nk, dispatcher, tick, state, messages) {
         if (readyCount >= MIN_PLAYERS_TO_START) {
             startNewRound(state, dispatcher);
         }
-        return { state };
+        return { state: state };
     }
     if (state.phase === MatchPhase.COUNTDOWN) {
         if (state.roundTick >= COUNTDOWN_TICKS) {
             state.phase = MatchPhase.GUESSING;
             state.roundTick = 0;
         }
-        return { state };
+        return { state: state };
     }
     if (state.phase === MatchPhase.GUESSING) {
         const alivePlayers = Object.values(state.players).filter((p) => p.isAlive);
@@ -334,29 +334,29 @@ function matchLoop(ctx, logger, nk, dispatcher, tick, state, messages) {
             state.roundTick = 0;
             processRoundResult(state, dispatcher, logger);
         }
-        return { state };
+        return { state: state };
     }
     if (state.phase === MatchPhase.REVEALING) {
         if (state.roundTick >= REVEAL_TICKS) {
             if (checkGameOver(state, dispatcher)) {
                 state.phase = MatchPhase.GAME_OVER;
-                return { state };
+                return { state: state };
             }
             state.phase = MatchPhase.NEXT_ROUND;
             state.roundTick = 0;
         }
-        return { state };
+        return { state: state };
     }
     if (state.phase === MatchPhase.NEXT_ROUND) {
         if (state.roundTick >= NEXT_ROUND_TICKS) {
             startNewRound(state, dispatcher);
         }
-        return { state };
+        return { state: state };
     }
     if (state.phase === MatchPhase.GAME_OVER) {
         return null;
     }
-    return { state };
+    return { state: state };
 }
 function matchTerminate(ctx, logger, nk, dispatcher, tick, state, graceSeconds) {
     logger.info("Match terminated");
@@ -365,10 +365,10 @@ function matchTerminate(ctx, logger, nk, dispatcher, tick, state, graceSeconds) 
         winnerUsername: null,
         terminated: true,
     });
-    return { state };
+    return { state: state };
 }
 function matchSignal(ctx, logger, nk, dispatcher, tick, state, data) {
-    return { state };
+    return { state: state };
 }
 
 const LEAGUE_TIERS = ["Bronze", "Silver", "Gold", "Platinum", "Diamond"];
@@ -442,7 +442,7 @@ function rpcGetPlayerRank(ctx, logger, nk, payload) {
     ]);
     const elo = record.length > 0 ? record[0].value.elo ?? BASE_ELO : BASE_ELO;
     const league = getLeague(elo);
-    return JSON.stringify({ elo, league });
+    return JSON.stringify({ elo: elo, league: league });
 }
 function rpcGetLeaderboard(ctx, logger, nk, payload) {
     const params = JSON.parse(payload || "{}");
@@ -511,11 +511,11 @@ function rpcCreateCustomRoom(ctx, logger, nk, payload) {
             key: roomCode,
             userId: "",
             value: {
-                matchId,
+                matchId: matchId,
                 creatorId: ctx.userId,
-                maxPlayers,
-                maxLives,
-                botCount,
+                maxPlayers: maxPlayers,
+                maxLives: maxLives,
+                botCount: botCount,
                 createdAt: Date.now(),
             },
             permissionRead: 2,
@@ -523,7 +523,7 @@ function rpcCreateCustomRoom(ctx, logger, nk, payload) {
         },
     ]);
     logger.info("Custom room created: code=%s matchId=%s", roomCode, matchId);
-    return JSON.stringify({ roomCode, matchId });
+    return JSON.stringify({ roomCode: roomCode, matchId: matchId });
 }
 function rpcJoinCustomRoom(ctx, logger, nk, payload) {
     const params = JSON.parse(payload || "{}");
@@ -539,7 +539,7 @@ function rpcJoinCustomRoom(ctx, logger, nk, payload) {
     }
     const room = records[0].value;
     logger.info("Player %s joining room %s (matchId=%s)", ctx.userId, roomCode, room.matchId);
-    return JSON.stringify({ matchId: room.matchId, roomCode });
+    return JSON.stringify({ matchId: room.matchId, roomCode: roomCode });
 }
 function rpcFindOrCreateRankedMatch(ctx, logger, nk, payload) {
     const matchId = nk.matchCreate("meanfall_match", {
@@ -549,7 +549,54 @@ function rpcFindOrCreateRankedMatch(ctx, logger, nk, payload) {
         room_code: "",
     });
     logger.info("Ranked match created: %s", matchId);
-    return JSON.stringify({ matchId });
+    return JSON.stringify({ matchId: matchId });
+}
+
+const OTP_EXPIRY_MS = 300000;
+function rpcSendOtp(ctx, logger, nk, payload) {
+    const input = JSON.parse(payload);
+    const email = input.email;
+    if (!email) {
+        throw new Error("Email is required");
+    }
+    const otp = Math.floor(100000 + Math.random() * 900000).toString();
+    const expiry = Date.now() + OTP_EXPIRY_MS;
+    const storageWrite = {
+        collection: "otps",
+        key: email,
+        userId: "00000000-0000-0000-0000-000000000000",
+        value: { otp: otp, expiry: expiry },
+        permissionRead: 0,
+        permissionWrite: 0,
+    };
+    nk.storageWrite([storageWrite]);
+    logger.info("OTP for %s: %s", email, otp);
+    return JSON.stringify({ success: true });
+}
+function rpcVerifyOtp(ctx, logger, nk, payload) {
+    const input = JSON.parse(payload);
+    const email = input.email;
+    const otp = input.otp;
+    if (!email || !otp) {
+        throw new Error("Email and OTP are required");
+    }
+    const storageRead = {
+        collection: "otps",
+        key: email,
+        userId: "00000000-0000-0000-0000-000000000000",
+    };
+    const results = nk.storageRead([storageRead]);
+    if (results.length === 0) {
+        throw new Error("OTP expired or not found");
+    }
+    const data = results[0].value;
+    if (Date.now() > data.expiry) {
+        throw new Error("OTP expired");
+    }
+    if (data.otp !== otp) {
+        throw new Error("Invalid OTP");
+    }
+    return JSON.stringify({ success: true });
 }
 
 function InitModule(ctx, logger, nk, initializer) {
@@ -569,5 +616,7 @@ function InitModule(ctx, logger, nk, initializer) {
     initializer.registerRpc("create_custom_room", rpcCreateCustomRoom);
     initializer.registerRpc("join_custom_room", rpcJoinCustomRoom);
     initializer.registerRpc("find_or_create_ranked_match", rpcFindOrCreateRankedMatch);
+    initializer.registerRpc("send_otp", rpcSendOtp);
+    initializer.registerRpc("verify_otp", rpcVerifyOtp);
 }
 ;

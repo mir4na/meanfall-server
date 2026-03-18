@@ -109,7 +109,7 @@ export function rpcGetPlayerRank(
     const elo = record.length > 0 ? (record[0].value as any).elo ?? BASE_ELO : BASE_ELO;
     const league = getLeague(elo);
 
-    return JSON.stringify({ elo, league });
+    return JSON.stringify({ elo: elo, league: league });
 }
 
 export function rpcGetLeaderboard(

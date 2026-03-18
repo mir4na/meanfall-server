@@ -120,16 +120,16 @@ function processRoundResult(
             username: player.username,
             guessValue: player.guessValue,
             lives: player.lives,
-            livesLost,
+            livesLost: livesLost,
             isWinner: winnerIds.includes(playerId),
             isAlive: player.isAlive,
         };
     }
 
     const payload = {
-        target,
+        target: target,
         is2PlayerMode: alivePlayers.length === 2,
-        playerResults,
+        playerResults: playerResults,
         roundNumber: state.roundNumber,
     };
 
@@ -280,7 +280,7 @@ export function matchJoin(
         logger.info("Player joined: %s (reconnect: %s)", presence.userId, isReconnect);
     }
 
-    return { state };
+    return { state: state };
 }
 
 export function matchLeave(
@@ -302,7 +302,7 @@ export function matchLeave(
             logger.info("Player disconnected: %s (kept in state for reconnect)", presence.userId);
         }
     }
-    return { state };
+    return { state: state };
 }
 
 export function matchLoop(
@@ -361,7 +361,7 @@ export function matchLoop(
         if (readyCount >= MIN_PLAYERS_TO_START) {
             startNewRound(state, dispatcher);
         }
-        return { state };
+        return { state: state };
     }
 
     if (state.phase === MatchPhase.COUNTDOWN) {
@@ -369,7 +369,7 @@ export function matchLoop(
             state.phase = MatchPhase.GUESSING;
             state.roundTick = 0;
         }
-        return { state };
+        return { state: state };
     }
 
     if (state.phase === MatchPhase.GUESSING) {
@@ -393,33 +393,33 @@ export function matchLoop(
             processRoundResult(state, dispatcher, logger);
         }
 
-        return { state };
+        return { state: state };
     }
 
     if (state.phase === MatchPhase.REVEALING) {
         if (state.roundTick >= REVEAL_TICKS) {
             if (checkGameOver(state, dispatcher)) {
                 state.phase = MatchPhase.GAME_OVER;
-                return { state };
+                return { state: state };
             }
             state.phase = MatchPhase.NEXT_ROUND;
             state.roundTick = 0;
         }
-        return { state };
+        return { state: state };
     }
 
     if (state.phase === MatchPhase.NEXT_ROUND) {
         if (state.roundTick >= NEXT_ROUND_TICKS) {
             startNewRound(state, dispatcher);
         }
-        return { state };
+        return { state: state };
     }
 
     if (state.phase === MatchPhase.GAME_OVER) {
         return null;
     }
 
-    return { state };
+    return { state: state };
 }
 
 export function matchTerminate(
@@ -437,7 +437,7 @@ export function matchTerminate(
         winnerUsername: null,
         terminated: true,
     });
-    return { state };
+    return { state: state };
 }
 
 export function matchSignal(
@@ -449,5 +449,5 @@ export function matchSignal(
     state: MatchState,
     data: string
 ): { state: MatchState; data?: string } | null {
-    return { state };
+    return { state: state };
 }

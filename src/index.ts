@@ -17,6 +17,10 @@ import {
     rpcJoinCustomRoom,
     rpcFindOrCreateRankedMatch,
 } from "./room_handler";
+import {
+    rpcSendOtp,
+    rpcVerifyOtp,
+} from "./account_handler";
 
 function InitModule(
     ctx: nkruntime.Context,
@@ -43,4 +47,6 @@ function InitModule(
     initializer.registerRpc("create_custom_room", rpcCreateCustomRoom);
     initializer.registerRpc("join_custom_room", rpcJoinCustomRoom);
     initializer.registerRpc("find_or_create_ranked_match", rpcFindOrCreateRankedMatch);
+    initializer.registerRpc("send_otp", rpcSendOtp);
+    initializer.registerRpc("verify_otp", rpcVerifyOtp);
 };
