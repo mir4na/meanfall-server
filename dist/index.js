@@ -57,6 +57,117 @@ function assignRandomPowerUp() {
     return PowerUpType.NONE;
 }
 
+const LEAGUE_TIERS = ["Bronze", "Silver", "Gold", "Platinum", "Diamond"];
+const BASE_POINTS = 1000;
+const LEADERBOARD_ID = "meanfall_ranked";
+function getLeague(points) {
+    if (points < 1500)
+        return LEAGUE_TIERS[0];
+    if (points < 3000)
+        return LEAGUE_TIERS[1];
+    if (points < 6000)
+        return LEAGUE_TIERS[2];
+    if (points < 10000)
+        return LEAGUE_TIERS[3];
+    return LEAGUE_TIERS[4];
+}
+function updateMatchResults(nk, logger, rankedPlayers, durationSeconds) {
+    const timestamp = Date.now();
+    const matchId = Math.random().toString(36).substring(2, 15);
+    for (const p of rankedPlayers) {
+        const pointsGained = Math.max(0, 110 - p.rank * 10);
+        const record = nk.storageRead([{ collection: "rankings", key: "stats", userId: p.userId }]);
+        const currentStats = record.length > 0 ? record[0].value : {
+            totalPoints: BASE_POINTS,
+            totalMatches: 0,
+            wins: 0,
+            totalPlaytimeSec: 0,
+        };
+        const newPoints = currentStats.totalPoints + pointsGained;
+        const isWin = p.rank === 1;
+        const updatedStats = {
+            totalPoints: newPoints,
+            totalMatches: currentStats.totalMatches + 1,
+            wins: currentStats.wins + (isWin ? 1 : 0),
+            totalPlaytimeSec: (currentStats.totalPlaytimeSec || 0) + durationSeconds,
+            lastPlayed: timestamp,
+            winrate: ((currentStats.wins + (isWin ? 1 : 0)) / (currentStats.totalMatches + 1)).toFixed(2),
+        };
+        nk.storageWrite([
+            {
+                collection: "rankings",
+                key: "stats",
+                userId: p.userId,
+                value: updatedStats,
+                permissionRead: 2,
+                permissionWrite: 0,
+            },
+        ]);
+        nk.leaderboardRecordWrite(LEADERBOARD_ID, p.userId, p.username, newPoints, undefined, {});
+        const historyKey = `${timestamp}_${matchId}`;
+        nk.storageWrite([
+            {
+                collection: "match_history",
+                key: historyKey,
+                userId: p.userId,
+                value: {
+                    matchId: matchId,
+                    timestamp: timestamp,
+                    rank: p.rank,
+                    pointsGained: pointsGained,
+                    durationSeconds: durationSeconds,
+                },
+                permissionRead: 2,
+                permissionWrite: 0,
+            },
+        ]);
+        logger.info("Player %s updated: Rank %d, +%d points, New Total: %d", p.userId, p.rank, pointsGained, newPoints);
+    }
+}
+function rpcGetPlayerStats(ctx, logger, nk, payload) {
+    const record = nk.storageRead([{ collection: "rankings", key: "stats", userId: ctx.userId || "" }]);
+    if (record.length === 0) {
+        return JSON.stringify({
+            totalPoints: BASE_POINTS,
+            totalMatches: 0,
+            wins: 0,
+            winrate: "0.00",
+            league: LEAGUE_TIERS[0],
+            totalPlaytimeSec: 0,
+        });
+    }
+    const stats = record[0].value;
+    stats.league = getLeague(stats.totalPoints);
+    return JSON.stringify(stats);
+}
+function rpcGetMatchHistory(ctx, logger, nk, payload) {
+    const userId = ctx.userId || "";
+    const records = nk.storageList(userId, "match_history", 10);
+    return JSON.stringify({ matches: (records.objects || []).map(o => o.value) });
+}
+function rpcGetLeaderboard(ctx, logger, nk, payload) {
+    const params = JSON.parse(payload || "{}");
+    const limit = Math.min(params.limit ?? 20, 100);
+    const records = nk.leaderboardRecordsList(LEADERBOARD_ID, [], limit, undefined, 0);
+    const result = (records.records ?? []).map((r, i) => ({
+        rank: i + 1,
+        userId: r.ownerId,
+        username: r.username,
+        points: r.score,
+        league: getLeague(r.score),
+    }));
+    return JSON.stringify({ records: result });
+}
+function initLeaderboard(nk, logger) {
+    try {
+        nk.leaderboardCreate(LEADERBOARD_ID, false, "descending" /* nkruntime.SortOrder.DESCENDING */, "set" /* nkruntime.Operator.SET */, undefined, {});
+        logger.info("Leaderboard '%s' initialized", LEADERBOARD_ID);
+    }
+    catch {
+        logger.info("Leaderboard '%s' already exists", LEADERBOARD_ID);
+    }
+}
+
 const TICK_RATE = 5;
 const GUESS_TICKS = 30 * TICK_RATE;
 const COUNTDOWN_TICKS = 3 * TICK_RATE;
@@ -135,6 +246,8 @@ function processRoundResult(state, dispatcher, logger) {
             player.lives = Math.max(0, player.lives - livesLost);
             if (player.lives <= 0) {
                 player.isAlive = false;
+                player.rank = state.playersRemaining;
+                state.playersRemaining--;
             }
         }
         playerResults[playerId] = {
@@ -157,10 +270,22 @@ function processRoundResult(state, dispatcher, logger) {
     resetRoundPowerUps(state);
     logger.info("Round %d result: target=%f winners=%j", state.roundNumber, target, winnerIds);
 }
-function checkGameOver(state, dispatcher) {
+function checkGameOver(state, dispatcher, nk, logger) {
     const alive = Object.values(state.players).filter((p) => p.isAlive);
     if (alive.length <= 1) {
         const winner = alive.length === 1 ? alive[0] : null;
+        if (winner) {
+            winner.rank = 1;
+        }
+        if (state.isRanked) {
+            const durationSeconds = Math.floor((Date.now() - state.matchStartTime) / 1000);
+            const rankedResults = Object.values(state.players).map((p) => ({
+                userId: p.userId,
+                username: p.username,
+                rank: p.rank || 1,
+            }));
+            updateMatchResults(nk, logger, rankedResults, durationSeconds);
+        }
         broadcastMessage(dispatcher, state.players, OpCode.GAME_OVER, {
             winnerId: winner?.userId ?? null,
             winnerUsername: winner?.username ?? null,
@@ -170,6 +295,10 @@ function checkGameOver(state, dispatcher) {
     return false;
 }
 function startNewRound(state, dispatcher) {
+    if (state.roundNumber === 0) {
+        state.matchStartTime = Date.now();
+        state.playersRemaining = Object.values(state.players).filter((p) => p.isAlive).length;
+    }
     state.roundNumber += 1;
     state.roundTick = 0;
     state.phase = MatchPhase.COUNTDOWN;
@@ -203,6 +332,8 @@ function matchInit(ctx, logger, nk, params) {
         roundTick: 0,
         maxLives,
         maxPlayers,
+        playersRemaining: 0,
+        matchStartTime: 0,
         isRanked,
         roomCode,
         tickRate: TICK_RATE,
@@ -338,7 +469,7 @@ function matchLoop(ctx, logger, nk, dispatcher, tick, state, messages) {
     }
     if (state.phase === MatchPhase.REVEALING) {
         if (state.roundTick >= REVEAL_TICKS) {
-            if (checkGameOver(state, dispatcher)) {
+            if (checkGameOver(state, dispatcher, nk, logger)) {
                 state.phase = MatchPhase.GAME_OVER;
                 return { state: state };
             }
@@ -369,102 +500,6 @@ function matchTerminate(ctx, logger, nk, dispatcher, tick, state, graceSeconds) 
 }
 function matchSignal(ctx, logger, nk, dispatcher, tick, state, data) {
     return { state: state };
-}
-
-const LEAGUE_TIERS = ["Bronze", "Silver", "Gold", "Platinum", "Diamond"];
-const ELO_K_FACTOR = 32;
-const BASE_ELO = 1000;
-const LEADERBOARD_ID = "meanfall_ranked";
-function getLeague(elo) {
-    if (elo < 1100)
-        return LEAGUE_TIERS[0];
-    if (elo < 1300)
-        return LEAGUE_TIERS[1];
-    if (elo < 1600)
-        return LEAGUE_TIERS[2];
-    if (elo < 2000)
-        return LEAGUE_TIERS[3];
-    return LEAGUE_TIERS[4];
-}
-function expectedScore(ratingA, ratingB) {
-    return 1 / (1 + Math.pow(10, (ratingB - ratingA) / 400));
-}
-function newElo(current, expected, actual) {
-    return Math.max(0, Math.round(current + ELO_K_FACTOR * (actual - expected)));
-}
-function updateRankings(nk, logger, winnerIds, allPlayerIds) {
-    const loserIds = allPlayerIds.filter((id) => !winnerIds.includes(id));
-    for (const winnerId of winnerIds) {
-        for (const loserId of loserIds) {
-            const winnerRecord = nk.storageRead([
-                { collection: "rankings", key: "elo", userId: winnerId },
-            ]);
-            const loserRecord = nk.storageRead([
-                { collection: "rankings", key: "elo", userId: loserId },
-            ]);
-            const winnerElo = winnerRecord.length > 0
-                ? winnerRecord[0].value.elo ?? BASE_ELO
-                : BASE_ELO;
-            const loserElo = loserRecord.length > 0
-                ? loserRecord[0].value.elo ?? BASE_ELO
-                : BASE_ELO;
-            const expectedWinner = expectedScore(winnerElo, loserElo);
-            const expectedLoser = expectedScore(loserElo, winnerElo);
-            const newWinnerElo = newElo(winnerElo, expectedWinner, 1);
-            const newLoserElo = newElo(loserElo, expectedLoser, 0);
-            nk.storageWrite([
-                {
-                    collection: "rankings",
-                    key: "elo",
-                    userId: winnerId,
-                    value: { elo: newWinnerElo, league: getLeague(newWinnerElo) },
-                    permissionRead: 2,
-                    permissionWrite: 0,
-                },
-                {
-                    collection: "rankings",
-                    key: "elo",
-                    userId: loserId,
-                    value: { elo: newLoserElo, league: getLeague(newLoserElo) },
-                    permissionRead: 2,
-                    permissionWrite: 0,
-                },
-            ]);
-            nk.leaderboardRecordWrite(LEADERBOARD_ID, winnerId, undefined, newWinnerElo, undefined, {});
-            nk.leaderboardRecordWrite(LEADERBOARD_ID, loserId, undefined, newLoserElo, undefined, {});
-            logger.info("ELO updated: %s %d->%d | %s %d->%d", winnerId, winnerElo, newWinnerElo, loserId, loserElo, newLoserElo);
-        }
-    }
-}
-function rpcGetPlayerRank(ctx, logger, nk, payload) {
-    const record = nk.storageRead([
-        { collection: "rankings", key: "elo", userId: ctx.userId || "" },
-    ]);
-    const elo = record.length > 0 ? record[0].value.elo ?? BASE_ELO : BASE_ELO;
-    const league = getLeague(elo);
-    return JSON.stringify({ elo: elo, league: league });
-}
-function rpcGetLeaderboard(ctx, logger, nk, payload) {
-    const params = JSON.parse(payload || "{}");
-    const limit = Math.min(params.limit ?? 20, 100);
-    const records = nk.leaderboardRecordsList(LEADERBOARD_ID, [], limit, undefined, 0);
-    const result = (records.records ?? []).map((r, i) => ({
-        rank: i + 1,
-        userId: r.ownerId,
-        username: r.username,
-        elo: r.score,
-        league: getLeague(r.score),
-    }));
-    return JSON.stringify({ records: result });
-}
-function initLeaderboard(nk, logger) {
-    try {
-        nk.leaderboardCreate(LEADERBOARD_ID, false, "descending" /* nkruntime.SortOrder.DESCENDING */, "set" /* nkruntime.Operator.SET */, undefined, {});
-        logger.info("Leaderboard '%s' initialized", LEADERBOARD_ID);
-    }
-    catch {
-        logger.info("Leaderboard '%s' already exists", LEADERBOARD_ID);
-    }
 }
 
 const ROOM_CODE_LENGTH = 6;
@@ -571,6 +606,17 @@ function rpcSendOtp(ctx, logger, nk, payload) {
     };
     nk.storageWrite([storageWrite]);
     logger.info("OTP for %s: %s", email, otp);
+    const mailerUrl = "http://mailer:3000/send";
+    const mailerHeaders = { "Content-Type": "application/json" };
+    const mailerBody = JSON.stringify({ to: email, otp: otp });
+    try {
+        nk.httpRequest(mailerUrl, "post", mailerHeaders, mailerBody);
+    }
+    catch (e) {
+        // We log the error but don't block the client from proceeding,
+        // in case the mail service is down but they can read the OTP from logs.
+        logger.error("Failed to contact mailer service: %s", e.message);
+    }
     return JSON.stringify({ success: true });
 }
 function rpcVerifyOtp(ctx, logger, nk, payload) {
@@ -611,7 +657,8 @@ function InitModule(ctx, logger, nk, initializer) {
         matchTerminate: matchTerminate,
         matchSignal: matchSignal,
     });
-    initializer.registerRpc("get_player_rank", rpcGetPlayerRank);
+    initializer.registerRpc("get_player_stats", rpcGetPlayerStats);
+    initializer.registerRpc("get_match_history", rpcGetMatchHistory);
     initializer.registerRpc("get_leaderboard", rpcGetLeaderboard);
     initializer.registerRpc("create_custom_room", rpcCreateCustomRoom);
     initializer.registerRpc("join_custom_room", rpcJoinCustomRoom);

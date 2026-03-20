@@ -81,6 +81,20 @@ services:
     networks:
       - meanfall_net
 
+  mailer:
+    build:
+      context: ./mailer
+      dockerfile: Dockerfile
+    container_name: meanfall_mailer
+    restart: unless-stopped
+    environment:
+      - SMTP_HOST=smtp.gmail.com
+      - SMTP_PORT=587
+      - SMTP_USER=${SMTP_USER}
+      - SMTP_PASS=${SMTP_PASS}
+    networks:
+      - meanfall_net
+
 volumes:
   postgres_data:
   redis_data:

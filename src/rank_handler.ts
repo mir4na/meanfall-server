@@ -17,13 +17,11 @@ export function updateMatchResults(
     durationSeconds: number
 ): void {
     const timestamp = Date.now();
-    const matchId = Math.random().toString(36).substring(2, 15); // Simple match ID if not provided
+    const matchId = Math.random().toString(36).substring(2, 15);
 
     for (const p of rankedPlayers) {
-        // 1. Calculate points: 110 - (rank * 10)
         const pointsGained = Math.max(0, 110 - p.rank * 10);
 
-        // 2. Update Points & League
         const record = nk.storageRead([{ collection: "rankings", key: "stats", userId: p.userId }]);
         const currentStats = record.length > 0 ? (record[0].value as any) : {
             totalPoints: BASE_POINTS,
@@ -55,10 +53,8 @@ export function updateMatchResults(
             },
         ]);
 
-        // 3. Update Leaderboard
         nk.leaderboardRecordWrite(LEADERBOARD_ID, p.userId, p.username, newPoints, undefined, {});
 
-        // 4. Save Match History
         const historyKey = `${timestamp}_${matchId}`;
         nk.storageWrite([
             {

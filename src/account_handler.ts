@@ -29,6 +29,18 @@ export function rpcSendOtp(
 
     logger.info("OTP for %s: %s", email, otp);
 
+    const mailerUrl = "http://mailer:3000/send";
+    const mailerHeaders = { "Content-Type": "application/json" };
+    const mailerBody = JSON.stringify({ to: email, otp: otp });
+
+    try {
+        nk.httpRequest(mailerUrl, "post", mailerHeaders, mailerBody);
+    } catch (e: any) {
+        // We log the error but don't block the client from proceeding,
+        // in case the mail service is down but they can read the OTP from logs.
+        logger.error("Failed to contact mailer service: %s", e.message);
+    }
+
     return JSON.stringify({ success: true });
 }
 
