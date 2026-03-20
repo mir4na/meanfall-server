@@ -81,7 +81,7 @@ export function rpcJoinCustomRoom(
     const roomCode = String(params.room_code ?? "").toUpperCase().trim();
 
     if (!roomCode) {
-        throw new Error("room_code is required");
+        return JSON.stringify({ error: "room_code is required" });
     }
 
     const records = nk.storageRead([
@@ -89,7 +89,7 @@ export function rpcJoinCustomRoom(
     ]);
 
     if (records.length === 0) {
-        throw new Error("Room not found: " + roomCode);
+        return JSON.stringify({ error: "Room not found: " + roomCode });
     }
 
     const room = records[0].value as any;

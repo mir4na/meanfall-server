@@ -10,7 +10,7 @@ export function rpcSendOtp(
     const email = input.email;
 
     if (!email) {
-        throw new Error("Email is required");
+        return JSON.stringify({ error: "Email is required" });
     }
 
     const otp = Math.floor(100000 + Math.random() * 900000).toString();
@@ -55,7 +55,7 @@ export function rpcVerifyOtp(
     const otp = input.otp;
 
     if (!email || !otp) {
-        throw new Error("Email and OTP are required");
+        return JSON.stringify({ error: "Email and OTP are required" });
     }
 
     const storageRead: nkruntime.StorageReadRequest = {
@@ -66,16 +66,16 @@ export function rpcVerifyOtp(
 
     const results = nk.storageRead([storageRead]);
     if (results.length === 0) {
-        throw new Error("OTP expired or not found");
+        return JSON.stringify({ error: "OTP expired or not found" });
     }
 
     const data = results[0].value;
     if (Date.now() > data.expiry) {
-        throw new Error("OTP expired");
+        return JSON.stringify({ error: "OTP expired" });
     }
 
     if (data.otp !== otp) {
-        throw new Error("Invalid OTP");
+        return JSON.stringify({ error: "Invalid OTP" });
     }
 
     return JSON.stringify({ success: true });

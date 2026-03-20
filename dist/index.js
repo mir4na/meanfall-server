@@ -564,13 +564,13 @@ function rpcJoinCustomRoom(ctx, logger, nk, payload) {
     const params = JSON.parse(payload || "{}");
     const roomCode = String(params.room_code ?? "").toUpperCase().trim();
     if (!roomCode) {
-        throw new Error("room_code is required");
+        return JSON.stringify({ error: "room_code is required" });
     }
     const records = nk.storageRead([
         { collection: ROOM_COLLECTION, key: roomCode, userId: "" },
     ]);
     if (records.length === 0) {
-        throw new Error("Room not found: " + roomCode);
+        return JSON.stringify({ error: "Room not found: " + roomCode });
     }
     const room = records[0].value;
     logger.info("Player %s joining room %s (matchId=%s)", ctx.userId, roomCode, room.matchId);
@@ -592,7 +592,7 @@ function rpcSendOtp(ctx, logger, nk, payload) {
     const input = JSON.parse(payload);
     const email = input.email;
     if (!email) {
-        throw new Error("Email is required");
+        return JSON.stringify({ error: "Email is required" });
     }
     const otp = Math.floor(100000 + Math.random() * 900000).toString();
     const expiry = Date.now() + OTP_EXPIRY_MS;
@@ -624,7 +624,7 @@ function rpcVerifyOtp(ctx, logger, nk, payload) {
     const email = input.email;
     const otp = input.otp;
     if (!email || !otp) {
-        throw new Error("Email and OTP are required");
+        return JSON.stringify({ error: "Email and OTP are required" });
     }
     const storageRead = {
         collection: "otps",
@@ -633,14 +633,14 @@ function rpcVerifyOtp(ctx, logger, nk, payload) {
     };
     const results = nk.storageRead([storageRead]);
     if (results.length === 0) {
-        throw new Error("OTP expired or not found");
+        return JSON.stringify({ error: "OTP expired or not found" });
     }
     const data = results[0].value;
     if (Date.now() > data.expiry) {
-        throw new Error("OTP expired");
+        return JSON.stringify({ error: "OTP expired" });
     }
     if (data.otp !== otp) {
-        throw new Error("Invalid OTP");
+        return JSON.stringify({ error: "Invalid OTP" });
     }
     return JSON.stringify({ success: true });
 }
