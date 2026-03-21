@@ -6,18 +6,21 @@ export const OpCode = {
     CHAT_MESSAGE: 5,
     PLAYER_JOINED: 6,
     PLAYER_LEFT: 7,
-    POWERUP_ACTIVATE: 8,
     RECONNECT_STATE: 9,
 } as const;
 
 export type OpCodeValue = (typeof OpCode)[keyof typeof OpCode];
 
-export const PowerUpType = {
-    TRIPLE_DAMAGE: "triple_damage",
+export const RoundEventType = {
+    DOUBLE_DAMAGE: "double_damage",
+    LIFE_STEAL: "life_steal",
+    CHAOS_ROLL: "chaos_roll",
+    REVERSE_OUTCOME: "reverse_outcome",
+    DOUBLE_GUESS: "double_guess",
     NONE: "none",
 } as const;
 
-export type PowerUpTypeValue = (typeof PowerUpType)[keyof typeof PowerUpType];
+export type RoundEventTypeValue = (typeof RoundEventType)[keyof typeof RoundEventType];
 
 export const MatchPhase = {
     WAITING: "waiting",
@@ -35,10 +38,9 @@ export interface PlayerState {
     username: string;
     lives: number;
     presence: nkruntime.Presence | null;
-    guessValue: number;
+    guessValue: number | number[];
     guessTime: number;
     isAfk: boolean;
-    activePowerUp: PowerUpTypeValue;
     isAlive: boolean;
     rank?: number;
 }
@@ -55,16 +57,13 @@ export interface MatchState {
     isRanked: boolean;
     roomCode: string;
     tickRate: number;
+    activeEvent: RoundEventTypeValue;
 }
 
 export interface GuessSubmitPayload {
-    value: number;
+    value: number | number[];
 }
 
 export interface ChatPayload {
     message: string;
-}
-
-export interface PowerUpActivatePayload {
-    powerUpType: PowerUpTypeValue;
 }

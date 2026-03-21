@@ -104,6 +104,20 @@ export function rpcFindOrCreateRankedMatch(
     nk: nkruntime.Nakama,
     payload: string
 ): string {
+    const limit = 100;
+    const authoritative = true;
+    const matches = nk.matchList(limit, authoritative, null, 0, 9);
+
+    for (const match of matches) {
+        try {
+            const labelData = JSON.parse(match.label || "{}");
+            if (labelData.isRanked === true) {
+                return JSON.stringify({ matchId: match.matchId });
+            }
+        } catch (e) {
+        }
+    }
+
     const matchId = nk.matchCreate("meanfall_match", {
         max_players: "10",
         max_lives: "10",
@@ -111,6 +125,5 @@ export function rpcFindOrCreateRankedMatch(
         room_code: "",
     });
 
-    logger.info("Ranked match created: %s", matchId);
     return JSON.stringify({ matchId: matchId });
 }

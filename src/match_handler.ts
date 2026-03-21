@@ -5,14 +5,9 @@ import {
     MatchPhase,
     GuessSubmitPayload,
     ChatPayload,
-    PowerUpActivatePayload,
-    PowerUpType,
+    RoundEventType,
+    RoundEventTypeValue,
 } from "./types";
-import {
-    applyPowerUpEffects,
-    resetRoundPowerUps,
-    assignRandomPowerUp,
-} from "./powerup_handler";
 import {
     updateMatchResults,
 } from "./rank_handler";
@@ -22,30 +17,66 @@ const GUESS_TICKS = 30 * TICK_RATE;
 const COUNTDOWN_TICKS = 3 * TICK_RATE;
 const REVEAL_TICKS = 5 * TICK_RATE;
 const NEXT_ROUND_TICKS = 2 * TICK_RATE;
+const CHAOS_ROLL_TICKS = 5 * TICK_RATE;
 const ROUNDS_BEFORE_DOUBLE_DAMAGE = 5;
-const MIN_PLAYERS_TO_START = 2;
+const MIN_PLAYERS_TO_START = 3;
 
 function calculateAverage(players: Record<string, PlayerState>): number {
-    const alive = Object.values(players).filter((p) => p.isAlive);
+    const alive = Object.values(players).filter((p) => p.isAlive && p.guessValue !== -1);
     if (alive.length === 0) return 0;
-    const sum = alive.reduce((acc, p) => acc + p.guessValue, 0);
-    return sum / alive.length;
+
+    let sum = 0;
+    let count = 0;
+    for (const p of alive) {
+        if (Array.isArray(p.guessValue)) {
+            for (const v of p.guessValue) {
+                sum += v;
+                count++;
+            }
+        } else {
+            sum += p.guessValue;
+            count++;
+        }
+    }
+    return count > 0 ? sum / count : 0;
+}
+
+function getBestGuess(guess: number | number[], target: number): number {
+    if (Array.isArray(guess)) {
+        if (guess.length === 0) return -1;
+        if (guess.length === 1) return guess[0];
+        const diff0 = Math.abs(guess[0] - target);
+        const diff1 = Math.abs(guess[1] - target);
+        return diff0 < diff1 ? guess[0] : guess[1];
+    }
+    return guess as number;
 }
 
 function findWinners(
     players: Record<string, PlayerState>,
-    target: number
+    target: number,
+    isReverse: boolean
 ): string[] {
-    const alive = Object.values(players).filter((p) => p.isAlive);
+    const alive = Object.values(players).filter((p) => p.isAlive && p.guessValue !== -1);
     if (alive.length === 0) return [];
 
-    let minDiff = Infinity;
+    let bestLimit = isReverse ? -Infinity : Infinity;
+
     for (const p of alive) {
-        const diff = Math.abs(p.guessValue - target);
-        if (diff < minDiff) minDiff = diff;
+        const bestG = getBestGuess(p.guessValue, target);
+        const diff = Math.abs(bestG - target);
+        if (isReverse) {
+            if (diff > bestLimit) bestLimit = diff;
+        } else {
+            if (diff < bestLimit) bestLimit = diff;
+        }
     }
 
-    const tied = alive.filter((p) => Math.abs(p.guessValue - target) === minDiff);
+    const tied = alive.filter((p) => {
+        const bestG = getBestGuess(p.guessValue, target);
+        return Math.abs(bestG - target) === bestLimit;
+    });
+
     if (tied.length === 1) return [tied[0].userId];
 
     tied.sort((a, b) => a.guessTime - b.guessTime);
@@ -70,15 +101,24 @@ function buildReconnectState(state: MatchState): object {
     return {
         phase: state.phase,
         roundNumber: state.roundNumber,
+        activeEvent: state.activeEvent,
         players: Object.values(state.players).map((p) => ({
             userId: p.userId,
             username: p.username,
             lives: p.lives,
             isAlive: p.isAlive,
+            guessValue: p.guessValue,
         })),
         maxLives: state.maxLives,
         isRanked: state.isRanked,
     };
+}
+
+function assignRandomEvent(): RoundEventTypeValue {
+    const types = Object.values(RoundEventType).filter(
+        (t) => t !== RoundEventType.NONE
+    );
+    return types[Math.floor(Math.random() * types.length)] as RoundEventTypeValue;
 }
 
 function processRoundResult(
@@ -96,13 +136,16 @@ function processRoundResult(
         target = calculateAverage(state.players);
     }
 
-    const winnerIds = findWinners(state.players, target);
+    const isReverse = state.activeEvent === RoundEventType.REVERSE_OUTCOME;
+    const winnerIds = findWinners(state.players, target, isReverse);
     const loserIds = alivePlayers
         .map((p) => p.userId)
         .filter((id) => !winnerIds.includes(id));
 
-    const baseDamage = state.roundNumber > ROUNDS_BEFORE_DOUBLE_DAMAGE ? 2 : 1;
-    const damageMap = applyPowerUpEffects(state, loserIds, baseDamage);
+    let baseDamage = state.activeEvent === RoundEventType.DOUBLE_DAMAGE ? 2 : 1;
+    if (state.roundNumber > ROUNDS_BEFORE_DOUBLE_DAMAGE) {
+        baseDamage = 2;
+    }
 
     const playerResults: Record<string, object> = {};
 
@@ -110,20 +153,28 @@ function processRoundResult(
         const player = state.players[playerId];
         let livesLost = 0;
 
-        if (damageMap[playerId] !== undefined) {
-            livesLost = damageMap[playerId];
-            player.lives = Math.max(0, player.lives - livesLost);
-            if (player.lives <= 0) {
-                player.isAlive = false;
-                player.rank = state.playersRemaining;
-                state.playersRemaining--;
+        if (player.isAlive) {
+            if (winnerIds.includes(playerId)) {
+                if (state.activeEvent === RoundEventType.LIFE_STEAL) {
+                    player.lives = Math.min(state.maxLives, player.lives + 1);
+                }
+            } else if (loserIds.includes(playerId)) {
+                livesLost = baseDamage;
+                player.lives = Math.max(0, player.lives - livesLost);
+                if (player.lives <= 0) {
+                    player.isAlive = false;
+                    player.rank = state.playersRemaining;
+                    state.playersRemaining--;
+                }
             }
         }
+
+        const gVal = Array.isArray(player.guessValue) ? player.guessValue : [player.guessValue];
 
         playerResults[playerId] = {
             userId: player.userId,
             username: player.username,
-            guessValue: player.guessValue,
+            guessValue: gVal,
             lives: player.lives,
             livesLost: livesLost,
             isWinner: winnerIds.includes(playerId),
@@ -139,8 +190,6 @@ function processRoundResult(
     };
 
     broadcastMessage(dispatcher, state.players, OpCode.ROUND_RESULT, payload);
-    resetRoundPowerUps(state);
-
     logger.info("Round %d result: target=%f winners=%j", state.roundNumber, target, winnerIds);
 }
 
@@ -187,25 +236,18 @@ function startNewRound(
     state.roundNumber += 1;
     state.roundTick = 0;
     state.phase = MatchPhase.COUNTDOWN;
+    state.activeEvent = assignRandomEvent();
 
     for (const playerId in state.players) {
         const player = state.players[playerId];
         player.guessValue = -1;
         player.guessTime = 0;
         player.isAfk = false;
-        if (player.isAlive) {
-            player.activePowerUp = assignRandomPowerUp();
-        }
-    }
-
-    const powerUpData: Record<string, string> = {};
-    for (const playerId in state.players) {
-        powerUpData[playerId] = state.players[playerId].activePowerUp;
     }
 
     broadcastMessage(dispatcher, state.players, OpCode.ROUND_START, {
         roundNumber: state.roundNumber,
-        powerUps: powerUpData,
+        activeEvent: state.activeEvent,
     });
 }
 
@@ -232,6 +274,7 @@ export function matchInit(
         isRanked,
         roomCode,
         tickRate: TICK_RATE,
+        activeEvent: RoundEventType.NONE,
     };
 
     logger.info("Match initialized: maxPlayers=%d maxLives=%d isRanked=%s", maxPlayers, maxLives, isRanked);
@@ -276,6 +319,8 @@ export function matchJoin(
 
         if (isReconnect) {
             state.players[presence.userId].presence = presence;
+            state.players[presence.userId].isAfk = false;
+
             const reconnectPayload = buildReconnectState(state);
             dispatcher.broadcastMessage(
                 OpCode.RECONNECT_STATE,
@@ -289,13 +334,21 @@ export function matchJoin(
                 userId: presence.userId,
                 username: presence.username,
                 lives: state.maxLives,
-                presence,
+                presence: presence,
                 guessValue: -1,
                 guessTime: 0,
                 isAfk: false,
-                activePowerUp: PowerUpType.NONE,
                 isAlive: true,
             };
+
+            const reconnectPayload = buildReconnectState(state);
+            dispatcher.broadcastMessage(
+                OpCode.RECONNECT_STATE,
+                JSON.stringify(reconnectPayload),
+                [presence],
+                null,
+                true
+            );
 
             broadcastMessage(dispatcher, state.players, OpCode.PLAYER_JOINED, {
                 userId: presence.userId,
@@ -303,11 +356,8 @@ export function matchJoin(
                 lives: state.maxLives,
             });
         }
-
-        logger.info("Player joined: %s (reconnect: %s)", presence.userId, isReconnect);
     }
-
-    return { state: state };
+    return { state };
 }
 
 export function matchLeave(
@@ -326,7 +376,6 @@ export function matchLeave(
                 userId: presence.userId,
                 username: presence.username,
             });
-            logger.info("Player disconnected: %s (kept in state for reconnect)", presence.userId);
         }
     }
     return { state: state };
@@ -340,18 +389,22 @@ export function matchLoop(
     tick: number,
     state: MatchState,
     messages: nkruntime.MatchMessage[]
-): { state: MatchState } | null {
+): { state: MatchState; label?: string } | null {
     for (const message of messages) {
         const opCode = message.opCode as number;
 
-        if (opCode === OpCode.GUESS_SUBMIT && state.phase === MatchPhase.GUESSING) {
+        if (opCode === OpCode.GUESS_SUBMIT && state.phase === MatchPhase.GUESSING && state.activeEvent !== RoundEventType.CHAOS_ROLL) {
             const payload = JSON.parse(nk.binaryToString(message.data)) as GuessSubmitPayload;
             const player = state.players[message.sender.userId];
             if (player && player.isAlive && player.guessValue === -1) {
-                const value = Math.max(0, Math.min(100, Math.floor(payload.value)));
-                player.guessValue = value;
+                let formattedValue: number | number[];
+                if (Array.isArray(payload.value)) {
+                    formattedValue = payload.value.map(v => Math.max(0, Math.min(100, Math.floor(v))));
+                } else {
+                    formattedValue = Math.max(0, Math.min(100, Math.floor(payload.value)));
+                }
+                player.guessValue = formattedValue;
                 player.guessTime = tick;
-                logger.info("Guess received from %s: %d", message.sender.userId, value);
             }
         }
 
@@ -367,18 +420,6 @@ export function matchLoop(
                 });
             }
         }
-
-        if (opCode === OpCode.POWERUP_ACTIVATE && state.phase === MatchPhase.GUESSING) {
-            const payload = JSON.parse(nk.binaryToString(message.data)) as PowerUpActivatePayload;
-            const player = state.players[message.sender.userId];
-            if (player && player.isAlive && player.activePowerUp === payload.powerUpType) {
-                player.activePowerUp = payload.powerUpType;
-                broadcastMessage(dispatcher, state.players, OpCode.POWERUP_ACTIVATE, {
-                    userId: message.sender.userId,
-                    powerUpType: payload.powerUpType,
-                });
-            }
-        }
     }
 
     state.roundTick += 1;
@@ -386,7 +427,11 @@ export function matchLoop(
     if (state.phase === MatchPhase.WAITING) {
         const readyCount = Object.values(state.players).filter((p) => p.isAlive).length;
         if (readyCount >= MIN_PLAYERS_TO_START) {
-            startNewRound(state, dispatcher);
+            if (state.roundTick >= 5) {
+                startNewRound(state, dispatcher);
+            }
+        } else {
+            state.roundTick = 0;
         }
         return { state: state };
     }
@@ -404,17 +449,20 @@ export function matchLoop(
         const allGuessed = alivePlayers.every((p) => p.guessValue !== -1);
 
         const isTimeUp = state.roundTick >= GUESS_TICKS;
-        if (isTimeUp) {
+        const isChaosReady = state.activeEvent === RoundEventType.CHAOS_ROLL && state.roundTick >= CHAOS_ROLL_TICKS;
+
+        if (isTimeUp || isChaosReady) {
             for (const player of alivePlayers) {
                 if (player.guessValue === -1) {
-                    player.guessValue = Math.floor(Math.random() * 101);
+                    const isDouble = state.activeEvent === RoundEventType.DOUBLE_GUESS;
+                    player.guessValue = isDouble ? [Math.floor(Math.random() * 101), Math.floor(Math.random() * 101)] : Math.floor(Math.random() * 101);
                     player.guessTime = tick;
-                    player.isAfk = true;
+                    player.isAfk = state.activeEvent !== RoundEventType.CHAOS_ROLL;
                 }
             }
         }
 
-        if (allGuessed || isTimeUp) {
+        if (allGuessed || isTimeUp || isChaosReady) {
             state.phase = MatchPhase.REVEALING;
             state.roundTick = 0;
             processRoundResult(state, dispatcher, logger);
@@ -458,7 +506,6 @@ export function matchTerminate(
     state: MatchState,
     graceSeconds: number
 ): { state: MatchState } | null {
-    logger.info("Match terminated");
     broadcastMessage(dispatcher, state.players, OpCode.GAME_OVER, {
         winnerId: null,
         winnerUsername: null,
