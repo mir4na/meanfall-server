@@ -220,6 +220,16 @@ function checkGameOver(
             winnerId: winner?.userId ?? null,
             winnerUsername: winner?.username ?? null,
         });
+
+        const deletes = Object.values(state.players).map((p) => ({
+            collection: "active_match",
+            key: "current",
+            userId: p.userId,
+        }));
+        if (deletes.length > 0) {
+            nk.storageDelete(deletes);
+        }
+
         return true;
     }
     return false;
@@ -316,6 +326,15 @@ export function matchJoin(
 ): { state: MatchState } | null {
     for (const presence of presences) {
         const isReconnect = state.players[presence.userId] !== undefined;
+
+        nk.storageWrite([{
+            collection: "active_match",
+            key: "current",
+            userId: presence.userId,
+            value: { matchId: ctx.matchId, timestamp: Date.now() },
+            permissionRead: 1,
+            permissionWrite: 0,
+        }]);
 
         if (isReconnect) {
             state.players[presence.userId].presence = presence;
@@ -460,9 +479,6 @@ export function matchLoop(
                     player.isAfk = state.activeEvent !== RoundEventType.CHAOS_ROLL;
                 }
             }
-        }
-
-        if (allGuessed || isTimeUp || isChaosReady) {
             state.phase = MatchPhase.REVEALING;
             state.roundTick = 0;
             processRoundResult(state, dispatcher, logger);

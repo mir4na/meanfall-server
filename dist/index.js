@@ -312,6 +312,14 @@ function checkGameOver(state, dispatcher, nk, logger) {
             winnerId: winner?.userId ?? null,
             winnerUsername: winner?.username ?? null,
         });
+        const deletes = Object.values(state.players).map((p) => ({
+            collection: "active_match",
+            key: "current",
+            userId: p.userId,
+        }));
+        if (deletes.length > 0) {
+            nk.storageDelete(deletes);
+        }
         return true;
     }
     return false;
@@ -372,6 +380,14 @@ function matchJoinAttempt(ctx, logger, nk, dispatcher, tick, state, presence, me
 function matchJoin(ctx, logger, nk, dispatcher, tick, state, presences) {
     for (const presence of presences) {
         const isReconnect = state.players[presence.userId] !== undefined;
+        nk.storageWrite([{
+                collection: "active_match",
+                key: "current",
+                userId: presence.userId,
+                value: { matchId: ctx.matchId, timestamp: Date.now() },
+                permissionRead: 1,
+                permissionWrite: 0,
+            }]);
         if (isReconnect) {
             state.players[presence.userId].presence = presence;
             state.players[presence.userId].isAfk = false;
@@ -477,8 +493,6 @@ function matchLoop(ctx, logger, nk, dispatcher, tick, state, messages) {
                     player.isAfk = state.activeEvent !== RoundEventType.CHAOS_ROLL;
                 }
             }
-        }
-        if (allGuessed || isTimeUp || isChaosReady) {
             state.phase = MatchPhase.REVEALING;
             state.roundTick = 0;
             processRoundResult(state, dispatcher, logger);
@@ -615,6 +629,32 @@ function rpcFindOrCreateRankedMatch(ctx, logger, nk, payload) {
     });
     return JSON.stringify({ matchId: matchId });
 }
+function rpcCheckActiveMatch(ctx, logger, nk, payload) {
+    const records = nk.storageRead([{
+            collection: "active_match",
+            key: "current",
+            userId: ctx.userId || "",
+        }]);
+    if (records.length === 0) {
+        return JSON.stringify({});
+    }
+    const data = records[0].value;
+    const matchId = data.matchId;
+    try {
+        const match = nk.matchGet(matchId);
+        if (match && match.size !== undefined) {
+            return JSON.stringify({ matchId: matchId });
+        }
+    }
+    catch (e) {
+    }
+    nk.storageDelete([{
+            collection: "active_match",
+            key: "current",
+            userId: ctx.userId || "",
+        }]);
+    return JSON.stringify({});
+}
 
 const OTP_EXPIRY_MS = 300000;
 function rpcSendOtp(ctx, logger, nk, payload) {
@@ -692,6 +732,7 @@ function InitModule(ctx, logger, nk, initializer) {
     initializer.registerRpc("create_custom_room", rpcCreateCustomRoom);
     initializer.registerRpc("join_custom_room", rpcJoinCustomRoom);
     initializer.registerRpc("find_or_create_ranked_match", rpcFindOrCreateRankedMatch);
+    initializer.registerRpc("check_active_match", rpcCheckActiveMatch);
     initializer.registerRpc("send_otp", rpcSendOtp);
     initializer.registerRpc("verify_otp", rpcVerifyOtp);
 }

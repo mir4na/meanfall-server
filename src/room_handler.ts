@@ -127,3 +127,39 @@ export function rpcFindOrCreateRankedMatch(
 
     return JSON.stringify({ matchId: matchId });
 }
+
+export function rpcCheckActiveMatch(
+    ctx: nkruntime.Context,
+    logger: nkruntime.Logger,
+    nk: nkruntime.Nakama,
+    payload: string
+): string {
+    const records = nk.storageRead([{
+        collection: "active_match",
+        key: "current",
+        userId: ctx.userId || "",
+    }]);
+
+    if (records.length === 0) {
+        return JSON.stringify({});
+    }
+
+    const data = records[0].value as any;
+    const matchId: string = data.matchId;
+
+    try {
+        const match = nk.matchGet(matchId);
+        if (match && match.size !== undefined) {
+            return JSON.stringify({ matchId: matchId });
+        }
+    } catch (e) {
+    }
+
+    nk.storageDelete([{
+        collection: "active_match",
+        key: "current",
+        userId: ctx.userId || "",
+    }]);
+
+    return JSON.stringify({});
+}

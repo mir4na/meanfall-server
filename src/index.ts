@@ -17,6 +17,7 @@ import {
     rpcCreateCustomRoom,
     rpcJoinCustomRoom,
     rpcFindOrCreateRankedMatch,
+    rpcCheckActiveMatch,
 } from "./room_handler";
 import {
     rpcSendOtp,
@@ -49,6 +50,7 @@ function InitModule(
     initializer.registerRpc("create_custom_room", rpcCreateCustomRoom);
     initializer.registerRpc("join_custom_room", rpcJoinCustomRoom);
     initializer.registerRpc("find_or_create_ranked_match", rpcFindOrCreateRankedMatch);
+    initializer.registerRpc("check_active_match", rpcCheckActiveMatch);
     initializer.registerRpc("send_otp", rpcSendOtp);
     initializer.registerRpc("verify_otp", rpcVerifyOtp);
 };
