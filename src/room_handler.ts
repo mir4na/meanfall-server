@@ -1,6 +1,10 @@
 const ROOM_CODE_LENGTH = 6;
 const ROOM_CODE_CHARS = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
 const ROOM_COLLECTION = "custom_rooms";
+const RANKED_QUEUE_COLLECTION = "ranked_queue";
+const RANKED_QUEUE_KEY = "current";
+const RANKED_MAX_PLAYERS = 3;
+const SYSTEM_USER_ID = "00000000-0000-0000-0000-000000000000";
 
 function generateRoomCode(): string {
     let code = "";
@@ -93,9 +97,30 @@ export function rpcJoinCustomRoom(
     }
 
     const room = records[0].value as any;
-    logger.info("Player %s joining room %s (matchId=%s)", ctx.userId, roomCode, room.matchId);
+    const matchId = String(room.matchId ?? "");
+    if (matchId === "") {
+        nk.storageDelete([
+            { collection: ROOM_COLLECTION, key: roomCode, userId: "" },
+        ]);
+        return JSON.stringify({ error: "Room not found: " + roomCode });
+    }
+    try {
+        const match = nk.matchGet(matchId);
+        if (!match) {
+            nk.storageDelete([
+                { collection: ROOM_COLLECTION, key: roomCode, userId: "" },
+            ]);
+            return JSON.stringify({ error: "Room not found: " + roomCode });
+        }
+    } catch (e) {
+        nk.storageDelete([
+            { collection: ROOM_COLLECTION, key: roomCode, userId: "" },
+        ]);
+        return JSON.stringify({ error: "Room not found: " + roomCode });
+    }
+    logger.info("Player %s joining room %s (matchId=%s)", ctx.userId, roomCode, matchId);
 
-    return JSON.stringify({ matchId: room.matchId, roomCode: roomCode });
+    return JSON.stringify({ matchId: matchId, roomCode: roomCode });
 }
 
 export function rpcFindOrCreateRankedMatch(
@@ -104,26 +129,53 @@ export function rpcFindOrCreateRankedMatch(
     nk: nkruntime.Nakama,
     payload: string
 ): string {
-    const limit = 100;
-    const authoritative = true;
-    const matches = nk.matchList(limit, authoritative, null, 0, 9);
-
-    for (const match of matches) {
+    const records = nk.storageRead([
+        { collection: RANKED_QUEUE_COLLECTION, key: RANKED_QUEUE_KEY, userId: SYSTEM_USER_ID },
+    ]);
+    if (records.length > 0) {
         try {
-            const labelData = JSON.parse(match.label || "{}");
-            if (labelData.isRanked === true) {
-                return JSON.stringify({ matchId: match.matchId });
+            const queue = records[0].value as any;
+            const matchId = String(queue.matchId ?? "");
+            if (matchId !== "") {
+                const match = nk.matchGet(matchId);
+                if (match) {
+                    const labelData = JSON.parse(match.label || "{}");
+                    if (
+                        labelData.isRanked === true &&
+                        labelData.phase === "waiting" &&
+                        Number(labelData.playerCount ?? 0) < Number(labelData.maxPlayers ?? RANKED_MAX_PLAYERS)
+                    ) {
+                        return JSON.stringify({ matchId: matchId });
+                    }
+                }
             }
         } catch (e) {
         }
+        nk.storageDelete([
+            { collection: RANKED_QUEUE_COLLECTION, key: RANKED_QUEUE_KEY, userId: SYSTEM_USER_ID },
+        ]);
     }
 
     const matchId = nk.matchCreate("meanfall_match", {
-        max_players: "10",
+        max_players: String(RANKED_MAX_PLAYERS),
         max_lives: "10",
         is_ranked: "true",
         room_code: "",
     });
+
+    nk.storageWrite([
+        {
+            collection: RANKED_QUEUE_COLLECTION,
+            key: RANKED_QUEUE_KEY,
+            userId: SYSTEM_USER_ID,
+            value: {
+                matchId: matchId,
+                createdAt: Date.now(),
+            },
+            permissionRead: 0,
+            permissionWrite: 0,
+        },
+    ]);
 
     return JSON.stringify({ matchId: matchId });
 }

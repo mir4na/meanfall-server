@@ -36,8 +36,7 @@ export function rpcSendOtp(
     try {
         nk.httpRequest(mailerUrl, "post", mailerHeaders, mailerBody);
     } catch (e: any) {
-        // We log the error but don't block the client from proceeding,
-        // in case the mail service is down but they can read the OTP from logs.
+        // read otp from logs (too lazy to set up mailer :v)
         logger.error("Failed to contact mailer service: %s", e.message);
     }
 

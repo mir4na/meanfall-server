@@ -146,6 +146,55 @@ const NEXT_ROUND_TICKS = 2 * TICK_RATE;
 const CHAOS_ROLL_TICKS = 5 * TICK_RATE;
 const ROUNDS_BEFORE_DOUBLE_DAMAGE = 5;
 const MIN_PLAYERS_TO_START = 3;
+const ROOM_COLLECTION$1 = "custom_rooms";
+const RANKED_QUEUE_COLLECTION$1 = "ranked_queue";
+const RANKED_QUEUE_KEY$1 = "current";
+const SYSTEM_USER_ID$1 = "00000000-0000-0000-0000-000000000000";
+function getWaitingPlayers(state) {
+    return Object.values(state.players).filter((player) => player.presence !== null);
+}
+function clearRankedQueueIfCurrent(state, nk, matchId) {
+    if (!state.isRanked)
+        return;
+    const records = nk.storageRead([{
+            collection: RANKED_QUEUE_COLLECTION$1,
+            key: RANKED_QUEUE_KEY$1,
+            userId: SYSTEM_USER_ID$1,
+        }]);
+    if (records.length === 0)
+        return;
+    const current = records[0].value;
+    if (String(current.matchId ?? "") !== matchId)
+        return;
+    nk.storageDelete([{
+            collection: RANKED_QUEUE_COLLECTION$1,
+            key: RANKED_QUEUE_KEY$1,
+            userId: SYSTEM_USER_ID$1,
+        }]);
+}
+function clearCustomRoomIfCurrent(state, nk) {
+    if (state.isRanked)
+        return;
+    if (state.roomCode === "")
+        return;
+    nk.storageDelete([{
+            collection: ROOM_COLLECTION$1,
+            key: state.roomCode,
+            userId: "",
+        }]);
+}
+function buildMatchLabel(state) {
+    const playerCount = state.phase === MatchPhase.WAITING
+        ? getWaitingPlayers(state).length
+        : Object.values(state.players).filter((player) => player.isAlive).length;
+    return JSON.stringify({
+        roomCode: state.roomCode,
+        isRanked: state.isRanked,
+        maxPlayers: state.maxPlayers,
+        playerCount,
+        phase: state.phase,
+    });
+}
 function calculateAverage(players) {
     const alive = Object.values(players).filter((p) => p.isAlive && p.guessValue !== -1);
     if (alive.length === 0)
@@ -213,11 +262,14 @@ function broadcastMessage(dispatcher, players, opCode, payload) {
     dispatcher.broadcastMessage(opCode, JSON.stringify(payload), presences, null, true);
 }
 function buildReconnectState(state) {
+    const players = state.phase === MatchPhase.WAITING
+        ? getWaitingPlayers(state)
+        : Object.values(state.players);
     return {
         phase: state.phase,
         roundNumber: state.roundNumber,
         activeEvent: state.activeEvent,
-        players: Object.values(state.players).map((p) => ({
+        players: players.map((p) => ({
             userId: p.userId,
             username: p.username,
             lives: p.lives,
@@ -225,6 +277,7 @@ function buildReconnectState(state) {
             guessValue: p.guessValue,
         })),
         maxLives: state.maxLives,
+        maxPlayers: state.maxPlayers,
         isRanked: state.isRanked,
     };
 }
@@ -324,11 +377,12 @@ function checkGameOver(state, dispatcher, nk, logger) {
     }
     return false;
 }
-function startNewRound(state, dispatcher) {
+function startNewRound(state, dispatcher, nk, matchId) {
     if (state.roundNumber === 0) {
         state.matchStartTime = Date.now();
         state.playersRemaining = Object.values(state.players).filter((p) => p.isAlive).length;
     }
+    clearRankedQueueIfCurrent(state, nk, matchId);
     state.roundNumber += 1;
     state.roundTick = 0;
     state.phase = MatchPhase.COUNTDOWN;
@@ -364,10 +418,12 @@ function matchInit(ctx, logger, nk, params) {
         activeEvent: RoundEventType.NONE,
     };
     logger.info("Match initialized: maxPlayers=%d maxLives=%d isRanked=%s", maxPlayers, maxLives, isRanked);
-    return { state, tickRate: TICK_RATE, label: JSON.stringify({ roomCode, isRanked, maxPlayers }) };
+    return { state, tickRate: TICK_RATE, label: buildMatchLabel(state) };
 }
 function matchJoinAttempt(ctx, logger, nk, dispatcher, tick, state, presence, metadata) {
-    const aliveCount = Object.values(state.players).filter((p) => p.isAlive).length;
+    const aliveCount = state.phase === MatchPhase.WAITING
+        ? getWaitingPlayers(state).length
+        : Object.values(state.players).filter((p) => p.isAlive).length;
     const isReconnect = state.players[presence.userId] !== undefined;
     if (!isReconnect && state.phase !== MatchPhase.WAITING) {
         return { state, accept: false, rejectMessage: "Match already in progress" };
@@ -414,19 +470,34 @@ function matchJoin(ctx, logger, nk, dispatcher, tick, state, presences) {
             });
         }
     }
-    return { state };
+    return { state, label: buildMatchLabel(state) };
 }
 function matchLeave(ctx, logger, nk, dispatcher, tick, state, presences) {
     for (const presence of presences) {
         if (state.players[presence.userId]) {
-            state.players[presence.userId].presence = null;
+            if (state.phase === MatchPhase.WAITING) {
+                nk.storageDelete([{
+                        collection: "active_match",
+                        key: "current",
+                        userId: presence.userId,
+                    }]);
+                delete state.players[presence.userId];
+            }
+            else {
+                state.players[presence.userId].presence = null;
+            }
             broadcastMessage(dispatcher, state.players, OpCode.PLAYER_LEFT, {
                 userId: presence.userId,
                 username: presence.username,
             });
         }
     }
-    return { state: state };
+    if (state.phase === MatchPhase.WAITING && getWaitingPlayers(state).length === 0) {
+        clearRankedQueueIfCurrent(state, nk, ctx.matchId ?? "");
+        clearCustomRoomIfCurrent(state, nk);
+        return null;
+    }
+    return { state: state, label: buildMatchLabel(state) };
 }
 function matchLoop(ctx, logger, nk, dispatcher, tick, state, messages) {
     for (const message of messages) {
@@ -461,25 +532,23 @@ function matchLoop(ctx, logger, nk, dispatcher, tick, state, messages) {
     }
     state.roundTick += 1;
     if (state.phase === MatchPhase.WAITING) {
-        const readyCount = Object.values(state.players).filter((p) => p.isAlive).length;
+        const readyCount = getWaitingPlayers(state).length;
         if (readyCount >= MIN_PLAYERS_TO_START) {
             if (state.roundTick >= 5) {
-                startNewRound(state, dispatcher);
+                startNewRound(state, dispatcher, nk, ctx.matchId ?? "");
             }
         }
         else {
             state.roundTick = 0;
         }
-        return { state: state };
     }
-    if (state.phase === MatchPhase.COUNTDOWN) {
+    else if (state.phase === MatchPhase.COUNTDOWN) {
         if (state.roundTick >= COUNTDOWN_TICKS) {
             state.phase = MatchPhase.GUESSING;
             state.roundTick = 0;
         }
-        return { state: state };
     }
-    if (state.phase === MatchPhase.GUESSING) {
+    else if (state.phase === MatchPhase.GUESSING) {
         const alivePlayers = Object.values(state.players).filter((p) => p.isAlive);
         const allGuessed = alivePlayers.every((p) => p.guessValue !== -1);
         const isTimeUp = state.roundTick >= GUESS_TICKS;
@@ -497,31 +566,33 @@ function matchLoop(ctx, logger, nk, dispatcher, tick, state, messages) {
             state.roundTick = 0;
             processRoundResult(state, dispatcher, logger);
         }
-        return { state: state };
     }
-    if (state.phase === MatchPhase.REVEALING) {
+    else if (state.phase === MatchPhase.REVEALING) {
         if (state.roundTick >= REVEAL_TICKS) {
             if (checkGameOver(state, dispatcher, nk, logger)) {
+                clearRankedQueueIfCurrent(state, nk, ctx.matchId ?? "");
+                clearCustomRoomIfCurrent(state, nk);
                 state.phase = MatchPhase.GAME_OVER;
-                return { state: state };
+                return { state: state, label: buildMatchLabel(state) };
             }
             state.phase = MatchPhase.NEXT_ROUND;
             state.roundTick = 0;
         }
-        return { state: state };
     }
-    if (state.phase === MatchPhase.NEXT_ROUND) {
+    else if (state.phase === MatchPhase.NEXT_ROUND) {
         if (state.roundTick >= NEXT_ROUND_TICKS) {
-            startNewRound(state, dispatcher);
+            startNewRound(state, dispatcher, nk, ctx.matchId ?? "");
         }
-        return { state: state };
+        return { state: state, label: buildMatchLabel(state) };
     }
     if (state.phase === MatchPhase.GAME_OVER) {
         return null;
     }
-    return { state: state };
+    return { state: state, label: buildMatchLabel(state) };
 }
 function matchTerminate(ctx, logger, nk, dispatcher, tick, state, graceSeconds) {
+    clearRankedQueueIfCurrent(state, nk, ctx.matchId ?? "");
+    clearCustomRoomIfCurrent(state, nk);
     broadcastMessage(dispatcher, state.players, OpCode.GAME_OVER, {
         winnerId: null,
         winnerUsername: null,
@@ -536,6 +607,10 @@ function matchSignal(ctx, logger, nk, dispatcher, tick, state, data) {
 const ROOM_CODE_LENGTH = 6;
 const ROOM_CODE_CHARS = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
 const ROOM_COLLECTION = "custom_rooms";
+const RANKED_QUEUE_COLLECTION = "ranked_queue";
+const RANKED_QUEUE_KEY = "current";
+const RANKED_MAX_PLAYERS = 3;
+const SYSTEM_USER_ID = "00000000-0000-0000-0000-000000000000";
 function generateRoomCode() {
     let code = "";
     for (let i = 0; i < ROOM_CODE_LENGTH; i++) {
@@ -604,29 +679,76 @@ function rpcJoinCustomRoom(ctx, logger, nk, payload) {
         return JSON.stringify({ error: "Room not found: " + roomCode });
     }
     const room = records[0].value;
-    logger.info("Player %s joining room %s (matchId=%s)", ctx.userId, roomCode, room.matchId);
-    return JSON.stringify({ matchId: room.matchId, roomCode: roomCode });
+    const matchId = String(room.matchId ?? "");
+    if (matchId === "") {
+        nk.storageDelete([
+            { collection: ROOM_COLLECTION, key: roomCode, userId: "" },
+        ]);
+        return JSON.stringify({ error: "Room not found: " + roomCode });
+    }
+    try {
+        const match = nk.matchGet(matchId);
+        if (!match) {
+            nk.storageDelete([
+                { collection: ROOM_COLLECTION, key: roomCode, userId: "" },
+            ]);
+            return JSON.stringify({ error: "Room not found: " + roomCode });
+        }
+    }
+    catch (e) {
+        nk.storageDelete([
+            { collection: ROOM_COLLECTION, key: roomCode, userId: "" },
+        ]);
+        return JSON.stringify({ error: "Room not found: " + roomCode });
+    }
+    logger.info("Player %s joining room %s (matchId=%s)", ctx.userId, roomCode, matchId);
+    return JSON.stringify({ matchId: matchId, roomCode: roomCode });
 }
 function rpcFindOrCreateRankedMatch(ctx, logger, nk, payload) {
-    const limit = 100;
-    const authoritative = true;
-    const matches = nk.matchList(limit, authoritative, null, 0, 9);
-    for (const match of matches) {
+    const records = nk.storageRead([
+        { collection: RANKED_QUEUE_COLLECTION, key: RANKED_QUEUE_KEY, userId: SYSTEM_USER_ID },
+    ]);
+    if (records.length > 0) {
         try {
-            const labelData = JSON.parse(match.label || "{}");
-            if (labelData.isRanked === true) {
-                return JSON.stringify({ matchId: match.matchId });
+            const queue = records[0].value;
+            const matchId = String(queue.matchId ?? "");
+            if (matchId !== "") {
+                const match = nk.matchGet(matchId);
+                if (match) {
+                    const labelData = JSON.parse(match.label || "{}");
+                    if (labelData.isRanked === true &&
+                        labelData.phase === "waiting" &&
+                        Number(labelData.playerCount ?? 0) < Number(labelData.maxPlayers ?? RANKED_MAX_PLAYERS)) {
+                        return JSON.stringify({ matchId: matchId });
+                    }
+                }
             }
         }
         catch (e) {
         }
+        nk.storageDelete([
+            { collection: RANKED_QUEUE_COLLECTION, key: RANKED_QUEUE_KEY, userId: SYSTEM_USER_ID },
+        ]);
     }
     const matchId = nk.matchCreate("meanfall_match", {
-        max_players: "10",
+        max_players: String(RANKED_MAX_PLAYERS),
         max_lives: "10",
         is_ranked: "true",
         room_code: "",
     });
+    nk.storageWrite([
+        {
+            collection: RANKED_QUEUE_COLLECTION,
+            key: RANKED_QUEUE_KEY,
+            userId: SYSTEM_USER_ID,
+            value: {
+                matchId: matchId,
+                createdAt: Date.now(),
+            },
+            permissionRead: 0,
+            permissionWrite: 0,
+        },
+    ]);
     return JSON.stringify({ matchId: matchId });
 }
 function rpcCheckActiveMatch(ctx, logger, nk, payload) {
@@ -682,8 +804,7 @@ function rpcSendOtp(ctx, logger, nk, payload) {
         nk.httpRequest(mailerUrl, "post", mailerHeaders, mailerBody);
     }
     catch (e) {
-        // We log the error but don't block the client from proceeding,
-        // in case the mail service is down but they can read the OTP from logs.
+        // read otp from logs (too lazy to set up mailer :v)
         logger.error("Failed to contact mailer service: %s", e.message);
     }
     return JSON.stringify({ success: true });

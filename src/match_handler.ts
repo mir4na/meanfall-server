@@ -20,6 +20,61 @@ const NEXT_ROUND_TICKS = 2 * TICK_RATE;
 const CHAOS_ROLL_TICKS = 5 * TICK_RATE;
 const ROUNDS_BEFORE_DOUBLE_DAMAGE = 5;
 const MIN_PLAYERS_TO_START = 3;
+const ROOM_COLLECTION = "custom_rooms";
+const RANKED_QUEUE_COLLECTION = "ranked_queue";
+const RANKED_QUEUE_KEY = "current";
+const SYSTEM_USER_ID = "00000000-0000-0000-0000-000000000000";
+
+function getWaitingPlayers(state: MatchState): PlayerState[] {
+    return Object.values(state.players).filter((player) => player.presence !== null);
+}
+
+function clearRankedQueueIfCurrent(
+    state: MatchState,
+    nk: nkruntime.Nakama,
+    matchId: string
+): void {
+    if (!state.isRanked) return;
+    const records = nk.storageRead([{
+        collection: RANKED_QUEUE_COLLECTION,
+        key: RANKED_QUEUE_KEY,
+        userId: SYSTEM_USER_ID,
+    }]);
+    if (records.length === 0) return;
+    const current = records[0].value as any;
+    if (String(current.matchId ?? "") !== matchId) return;
+    nk.storageDelete([{
+        collection: RANKED_QUEUE_COLLECTION,
+        key: RANKED_QUEUE_KEY,
+        userId: SYSTEM_USER_ID,
+    }]);
+}
+
+function clearCustomRoomIfCurrent(
+    state: MatchState,
+    nk: nkruntime.Nakama
+): void {
+    if (state.isRanked) return;
+    if (state.roomCode === "") return;
+    nk.storageDelete([{
+        collection: ROOM_COLLECTION,
+        key: state.roomCode,
+        userId: "",
+    }]);
+}
+
+function buildMatchLabel(state: MatchState): string {
+    const playerCount = state.phase === MatchPhase.WAITING
+        ? getWaitingPlayers(state).length
+        : Object.values(state.players).filter((player) => player.isAlive).length;
+    return JSON.stringify({
+        roomCode: state.roomCode,
+        isRanked: state.isRanked,
+        maxPlayers: state.maxPlayers,
+        playerCount,
+        phase: state.phase,
+    });
+}
 
 function calculateAverage(players: Record<string, PlayerState>): number {
     const alive = Object.values(players).filter((p) => p.isAlive && p.guessValue !== -1);
@@ -98,11 +153,14 @@ function broadcastMessage(
 }
 
 function buildReconnectState(state: MatchState): object {
+    const players = state.phase === MatchPhase.WAITING
+        ? getWaitingPlayers(state)
+        : Object.values(state.players);
     return {
         phase: state.phase,
         roundNumber: state.roundNumber,
         activeEvent: state.activeEvent,
-        players: Object.values(state.players).map((p) => ({
+        players: players.map((p) => ({
             userId: p.userId,
             username: p.username,
             lives: p.lives,
@@ -110,6 +168,7 @@ function buildReconnectState(state: MatchState): object {
             guessValue: p.guessValue,
         })),
         maxLives: state.maxLives,
+        maxPlayers: state.maxPlayers,
         isRanked: state.isRanked,
     };
 }
@@ -237,12 +296,15 @@ function checkGameOver(
 
 function startNewRound(
     state: MatchState,
-    dispatcher: nkruntime.MatchDispatcher
+    dispatcher: nkruntime.MatchDispatcher,
+    nk: nkruntime.Nakama,
+    matchId: string
 ): void {
     if (state.roundNumber === 0) {
         state.matchStartTime = Date.now();
         state.playersRemaining = Object.values(state.players).filter((p) => p.isAlive).length;
     }
+    clearRankedQueueIfCurrent(state, nk, matchId);
     state.roundNumber += 1;
     state.roundTick = 0;
     state.phase = MatchPhase.COUNTDOWN;
@@ -288,7 +350,7 @@ export function matchInit(
     };
 
     logger.info("Match initialized: maxPlayers=%d maxLives=%d isRanked=%s", maxPlayers, maxLives, isRanked);
-    return { state, tickRate: TICK_RATE, label: JSON.stringify({ roomCode, isRanked, maxPlayers }) };
+    return { state, tickRate: TICK_RATE, label: buildMatchLabel(state) };
 }
 
 export function matchJoinAttempt(
@@ -301,7 +363,9 @@ export function matchJoinAttempt(
     presence: nkruntime.Presence,
     metadata: { [key: string]: any }
 ): { state: MatchState; accept: boolean; rejectMessage?: string } {
-    const aliveCount = Object.values(state.players).filter((p) => p.isAlive).length;
+    const aliveCount = state.phase === MatchPhase.WAITING
+        ? getWaitingPlayers(state).length
+        : Object.values(state.players).filter((p) => p.isAlive).length;
     const isReconnect = state.players[presence.userId] !== undefined;
 
     if (!isReconnect && state.phase !== MatchPhase.WAITING) {
@@ -323,7 +387,7 @@ export function matchJoin(
     tick: number,
     state: MatchState,
     presences: nkruntime.Presence[]
-): { state: MatchState } | null {
+): { state: MatchState; label?: string } | null {
     for (const presence of presences) {
         const isReconnect = state.players[presence.userId] !== undefined;
 
@@ -376,7 +440,7 @@ export function matchJoin(
             });
         }
     }
-    return { state };
+    return { state, label: buildMatchLabel(state) };
 }
 
 export function matchLeave(
@@ -387,17 +451,31 @@ export function matchLeave(
     tick: number,
     state: MatchState,
     presences: nkruntime.Presence[]
-): { state: MatchState } | null {
+): { state: MatchState; label?: string } | null {
     for (const presence of presences) {
         if (state.players[presence.userId]) {
-            state.players[presence.userId].presence = null;
+            if (state.phase === MatchPhase.WAITING) {
+                nk.storageDelete([{
+                    collection: "active_match",
+                    key: "current",
+                    userId: presence.userId,
+                }]);
+                delete state.players[presence.userId];
+            } else {
+                state.players[presence.userId].presence = null;
+            }
             broadcastMessage(dispatcher, state.players, OpCode.PLAYER_LEFT, {
                 userId: presence.userId,
                 username: presence.username,
             });
         }
     }
-    return { state: state };
+    if (state.phase === MatchPhase.WAITING && getWaitingPlayers(state).length === 0) {
+        clearRankedQueueIfCurrent(state, nk, ctx.matchId ?? "");
+        clearCustomRoomIfCurrent(state, nk);
+        return null;
+    }
+    return { state: state, label: buildMatchLabel(state) };
 }
 
 export function matchLoop(
@@ -444,26 +522,20 @@ export function matchLoop(
     state.roundTick += 1;
 
     if (state.phase === MatchPhase.WAITING) {
-        const readyCount = Object.values(state.players).filter((p) => p.isAlive).length;
+        const readyCount = getWaitingPlayers(state).length;
         if (readyCount >= MIN_PLAYERS_TO_START) {
             if (state.roundTick >= 5) {
-                startNewRound(state, dispatcher);
+                startNewRound(state, dispatcher, nk, ctx.matchId ?? "");
             }
         } else {
             state.roundTick = 0;
         }
-        return { state: state };
-    }
-
-    if (state.phase === MatchPhase.COUNTDOWN) {
+    } else if (state.phase === MatchPhase.COUNTDOWN) {
         if (state.roundTick >= COUNTDOWN_TICKS) {
             state.phase = MatchPhase.GUESSING;
             state.roundTick = 0;
         }
-        return { state: state };
-    }
-
-    if (state.phase === MatchPhase.GUESSING) {
+    } else if (state.phase === MatchPhase.GUESSING) {
         const alivePlayers = Object.values(state.players).filter((p) => p.isAlive);
         const allGuessed = alivePlayers.every((p) => p.guessValue !== -1);
 
@@ -483,34 +555,29 @@ export function matchLoop(
             state.roundTick = 0;
             processRoundResult(state, dispatcher, logger);
         }
-
-        return { state: state };
-    }
-
-    if (state.phase === MatchPhase.REVEALING) {
+    } else if (state.phase === MatchPhase.REVEALING) {
         if (state.roundTick >= REVEAL_TICKS) {
             if (checkGameOver(state, dispatcher, nk, logger)) {
+                clearRankedQueueIfCurrent(state, nk, ctx.matchId ?? "");
+                clearCustomRoomIfCurrent(state, nk);
                 state.phase = MatchPhase.GAME_OVER;
-                return { state: state };
+                return { state: state, label: buildMatchLabel(state) };
             }
             state.phase = MatchPhase.NEXT_ROUND;
             state.roundTick = 0;
         }
-        return { state: state };
-    }
-
-    if (state.phase === MatchPhase.NEXT_ROUND) {
+    } else if (state.phase === MatchPhase.NEXT_ROUND) {
         if (state.roundTick >= NEXT_ROUND_TICKS) {
-            startNewRound(state, dispatcher);
+            startNewRound(state, dispatcher, nk, ctx.matchId ?? "");
         }
-        return { state: state };
+        return { state: state, label: buildMatchLabel(state) };
     }
 
     if (state.phase === MatchPhase.GAME_OVER) {
         return null;
     }
 
-    return { state: state };
+    return { state: state, label: buildMatchLabel(state) };
 }
 
 export function matchTerminate(
@@ -522,6 +589,8 @@ export function matchTerminate(
     state: MatchState,
     graceSeconds: number
 ): { state: MatchState } | null {
+    clearRankedQueueIfCurrent(state, nk, ctx.matchId ?? "");
+    clearCustomRoomIfCurrent(state, nk);
     broadcastMessage(dispatcher, state.players, OpCode.GAME_OVER, {
         winnerId: null,
         winnerUsername: null,
